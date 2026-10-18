@@ -620,10 +620,53 @@ en:{heroH:"The <em>student</em> voice",heroP:"Transparent feedback that helps te
 Object.assign(T.vi,{ann:"Mới: bảng xếp hạng tuần này đã cập nhật",annGo:"Xem xếp hạng",critT:"Tiêu chí đánh giá",ctaT:"Đến lượt em",ctaB:"Đánh giá thầy cô"});Object.assign(T.en,{ann:"New: this week's ranking is live",annGo:"See ranking",critT:"Rating criteria",ctaT:"Your turn",ctaB:"Rate a teacher"});
 const $=s=>document.querySelector(s);
 const ld=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}};
-const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+const sv=(k,v)=>{if(typeof CLOUD!=="undefined"&&CLOUD&&CK[k])return cloudSave(k,v);try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
 const pf=ld("vv_pref2",{});
 const SEED=[{id:"s1",title:"Cách ghi nhớ kiến thức lâu mà không học vẹt?",by:"Admin",ts:Date.now()-864e5,rep:[]},{id:"s2",title:"Chia thời gian tự học thế nào cho hiệu quả?",by:"Admin",ts:Date.now()-2*864e5,rep:[]}];
 const S={lang:pf.lang||"vi",theme:pf.theme||"light",accent:pf.accent||ACC[0],user:ld("vv_sess",null),mode:"login",who:"student",view:"home",login:false,next:null,week:ws(Date.now()),subj:"",st:"",sort:"overall",form:{},sel:null,set:false,topic:null,err:"",teachers:ld("vv_t",[]),ratings:ld("vv_r",[]),accs:ld("vv_a",{}),cmts:ld("vv_c",[]),topics:ld("vv_tp",SEED),rpts:ld("vv_rp",[]),rep:null,ed:null,cA:"",cB:""};
+/* =====================================================================
+   ĐỒNG BỘ DỮ LIỆU ONLINE (Supabase)
+   Chỉ cần dán Project URL và key của bạn vào 2 dòng dưới đây.
+   ===================================================================== */
+const SB_URL="https://akevvomtrrjpbdrnygil.supabase.co";
+const SB_KEY="sb_publishable_v0BKavgT9xCeUgTA2YYWJA_jNnQ_wln";
+/* ===================================================================== */
+const SB=SB_URL.trim().replace(/\/+$/,""),CLOUD=/^https?:\/\/[^\s"]+$/.test(SB)&&SB_KEY.trim().length>20;
+Object.assign(T.vi,{syncErr:"Không lưu được lên máy chủ, vui lòng thử lại.",loadT:"Đang tải dữ liệu…",offT:"Không kết nối được dữ liệu",offP:"Kiểm tra mạng rồi thử lại.",retry:"Thử lại"});
+Object.assign(T.en,{syncErr:"Could not save to the server, please try again.",loadT:"Loading data…",offT:"Can't reach the data server",offP:"Check your connection and try again.",retry:"Retry"});
+const CK={vv_t:["t","teachers"],vv_r:["r","ratings"],vv_a:["a","accs"],vv_c:["c","cmts"],vv_tp:["tp","topics"],vv_rp:["rp","rpts"]};
+const KID={t:x=>x.id,r:x=>x.sid+"|"+x.tid+"|"+x.week,c:x=>x.id,tp:x=>x.id,rp:x=>[x.type,x.cid,x.rid,x.by].join("|")};
+const SORT={t:(a,b)=>(+String(a.id).slice(1)||0)-(+String(b.id).slice(1)||0),r:(a,b)=>a.ts-b.ts,c:(a,b)=>a.ts-b.ts,rp:(a,b)=>a.ts-b.ts,tp:(a,b)=>b.ts-a.ts};
+const mt=()=>({t:{},r:{},a:{},c:{},tp:{},rp:{}});
+let ROWS=mt(),SNAP=mt(),HAS={},READY=!CLOUD,CUR=0,Q=Promise.resolve(),VER=0,LASTERR=null;
+const toMap=(co,v)=>{const m={};if(co==="a")Object.keys(v||{}).forEach(k=>m[k]=v[k]);else(v||[]).forEach(x=>m[KID[co](x)]=x);return m};
+function sbH(x){const h={apikey:SB_KEY.trim(),"Content-Type":"application/json"};if(!SB_KEY.trim().startsWith("sb_"))h.Authorization="Bearer "+SB_KEY.trim();return Object.assign(h,x||{})}
+async function sbGet(since){let all=[],off=0;for(;;){const r=await fetch(`${SB}/rest/v1/vv_items?select=coll,id,data,deleted,updated_at${since?"&updated_at=gt."+encodeURIComponent(since):""}&order=updated_at.asc,coll.asc,id.asc&limit=1000&offset=${off}`,{headers:sbH(),cache:"no-store"});if(!r.ok)throw new Error(r.status+" "+await r.text());const b=await r.json();all=all.concat(b);if(b.length<1000)break;off+=1000}return all}
+async function sbPut(rows){for(let i=0;i<rows.length;i+=200){const r=await fetch(`${SB}/rest/v1/vv_items?on_conflict=coll,id`,{method:"POST",headers:sbH({Prefer:"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(rows.slice(i,i+200))});if(!r.ok)throw new Error(r.status+" "+await r.text())}}
+function applyRows(rows){let ch=false;rows.forEach(r=>{const m=ROWS[r.coll];if(!m)return;HAS[r.coll]=1;const ts=Date.parse(r.updated_at)||0;if(ts>CUR)CUR=ts;
+  if(r.deleted){if(r.id in m){delete m[r.id];delete SNAP[r.coll][r.id];ch=true}}
+  else{const s=JSON.stringify(r.data);if(SNAP[r.coll][r.id]!==s){m[r.id]=r.data;SNAP[r.coll][r.id]=s;ch=true}}});return ch}
+function rebuild(){Object.values(CK).forEach(([co,f])=>{const m=ROWS[co],cp=id=>JSON.parse(JSON.stringify(m[id]));
+  if(co==="a"){const o={};Object.keys(m).sort((x,y)=>(m[x].ts||0)-(m[y].ts||0)).forEach(id=>o[id]=cp(id));S.accs=o}
+  else{let a=Object.keys(m).map(cp).sort(SORT[co]);if(co==="tp"&&!HAS.tp)a=SEED.map(x=>Object.assign({},x,{rep:[...x.rep]}));S[f]=a}})}
+function cloudSave(k,v){const co=CK[k][0],cur=toMap(co,v),out=[],ns={},nr={};
+  Object.keys(cur).forEach(id=>{const s=JSON.stringify(cur[id]);ns[id]=s;nr[id]=JSON.parse(s);if(SNAP[co][id]!==s)out.push({coll:co,id,data:cur[id],deleted:false})});
+  Object.keys(SNAP[co]).forEach(id=>{if(!(id in cur))out.push({coll:co,id,data:null,deleted:true})});
+  SNAP[co]=ns;ROWS[co]=nr;if(!out.length)return;if(co==="tp")HAS.tp=1;VER++;
+  Q=Q.then(()=>sbPut(out)).catch(e=>{console.warn(e);LASTERR=e;toast(t("syncErr"));setTimeout(resync,300)})}
+async function resync(){ROWS=mt();SNAP=mt();HAS={};CUR=0;await pull(true,true)}
+async function pull(paint,force){if(!CLOUD||!READY)return false;await Q;const v=VER;let rows;
+  try{rows=await sbGet(CUR?new Date(CUR-5000).toISOString():null)}catch(e){console.warn(e);return false}
+  if(v!==VER)return false;const ch=applyRows(rows);if(ch||force)rebuild();if(paint&&(ch||force)&&safe())render();return true}
+function safe(){const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=="checkbox")return false;
+  return![...document.querySelectorAll("#app textarea,#app input:not([type=checkbox]):not([type=file])")].some(e=>e.value)}
+async function boot(){if(!CLOUD){render();return}render();
+  try{applyRows(await sbGet(null))}catch(e){console.warn(e);$("#app").innerHTML=`<div class="card" style="max-width:440px;margin:18vh auto;text-align:center"><h3>${t("offT")}</h3><p class="mut">${t("offP")}</p><button class="btn p" onclick="location.reload()">${t("retry")}</button></div>`;return}
+  /* Lần đầu: máy chủ còn trống thì đẩy dữ liệu cũ đang lưu trên máy này lên */
+  if(!Object.keys(HAS).length){Object.keys(CK).forEach(k=>{const v=ld(k,null);if(v&&(Array.isArray(v)?v.length:Object.keys(v).length))cloudSave(k,v)});await Q}
+  rebuild();READY=true;render();
+  setInterval(()=>{if(document.visibilityState==="visible")pull(true)},15000);
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")pull(true)})}
 const t=k=>T[S.lang][k]||k;
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const nz=s=>s.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/đ/g,"d").replace(/Đ/g,"D").toLowerCase().replace(/\s+/g," ").trim();
@@ -823,12 +866,14 @@ function profV(){const a=me(),p=pfo(),mine=S.ratings.filter(r=>r.sid===S.user.id
   <h3 style="margin-top:16px">${t("avatar")}</h3><div class="opts">${AVS.map(e=>`<button class="avc ${p.av===e?"on":""}" onclick="setPf('av','${e}')">${e}</button>`).join("")}</div>
   <h3 style="margin-top:16px">${t("pcol")}</h3><div class="sw">${ACC.map(c=>`<button class="${p.pc===c?"on":""}" style="background:${c}" onclick="setPf('pc','${c}')"></button>`).join("")}</div>
   <h3 style="margin-top:16px">${t("bio")}</h3><div class="row"><input id="bio" maxlength="80" value="${esc(p.bio)}" placeholder="${t("bioPh")}"><button class="btn p" style="flex:none" onclick="saveBio()">${t("save")}</button></div></div>`}
-function render(){setPref();if(S.user&&S.user.role==="student"&&!S.accs[S.user.id])S.user=null;
+function render(){setPref();if(!READY){$("#app").innerHTML=`<div style="min-height:70vh;display:grid;place-items:center"><p class="mut">${t("loadT")}</p></div>`;return}if(S.user&&S.user.role==="student"&&!S.accs[S.user.id])S.user=null;
   let v=S.view;if(need[v]&&(!S.user||S.user.role!==need[v]))v="overview";
   document.body.classList.toggle("dk",v==="home");
   const body=({home:homeV,overview:ovV,rank:rankV,rate:rateV,news:newsV,hist:histV,manage:manV,compare:cmpV,profile:profV}[v]||homeV)();
   $("#app").innerHTML=topV()+body+(S.sel?detV():"")+(S.ed&&S.user?edM():"")+(S.rep&&S.user?repM():"")+(S.dt&&isA()?delM():"")+(S.login&&!S.user?loginM():"")+(S.set?setV():"")}
-render();
+/* Lấy dữ liệu mới nhất trước mỗi thao tác ghi để không ghi đè dữ liệu của máy khác */
+if(CLOUD)["doLogin","doReg","addT","delTok","resetA","sendR","sendC","voteC","modC","addTopic","addRep","delTp","sendRep","repKeep","repDel","saveEd","setPf","saveBio"].forEach(n=>{const f=window[n];if(typeof f!=="function")return;window[n]=async(...a)=>{await pull(false);return f(...a)}});
+boot();
 </script>
 </body>
 </html>
